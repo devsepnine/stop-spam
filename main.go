@@ -21,6 +21,7 @@ type Message struct {
 type MessageHistory struct {
 	ChannelID string
 	MessageID string
+	Delete    bool
 }
 
 var (
@@ -31,8 +32,6 @@ var (
 func init() {
 	var err error
 	config := util.GetConfig()
-	fmt.Println(config.DiscordToken)
-	fmt.Println(config.SummonTimeout)
 	dg, err = discordgo.New("Bot " + config.DiscordToken)
 	if err != nil {
 		log.Fatalf("Error creating Discord session: %v", err)
@@ -40,17 +39,9 @@ func init() {
 }
 
 func main() {
-	//err := util.UpdateConfig("summon_timeout", 3)
-	//if err != nil {
-	//	fmt.Println(err)
-	//	return
-	//}
-	var err error
 	dg.AddHandler(messageCreate)
-
 	dg.Identify.Intents = discordgo.IntentsGuildMessages
-
-	err = dg.Open()
+	err := dg.Open()
 	if err != nil {
 		log.Fatalf("Error opening connection: %v", err)
 	}
@@ -73,6 +64,23 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 		return
 	}
 
+	guild, err := s.Guild(m.GuildID)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+
+	if m.Author.ID == guild.OwnerID {
+		return
+	}
+	if util.GetConfig().WhiteList != nil {
+		for _, v := range util.GetConfig().WhiteList {
+			if m.Author.ID == v {
+				return
+			}
+		}
+	}
+
 	if _, ok := mdb[m.Author.ID]; ok {
 		if timeLapse(mdb[m.Author.ID].Time) && mdb[m.Author.ID].Content == m.Content {
 			mdb[m.Author.ID] = Message{
@@ -82,11 +90,14 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 				MessageHistory: append(mdb[m.Author.ID].MessageHistory, MessageHistory{
 					ChannelID: m.ChannelID,
 					MessageID: m.ID,
+					Delete:    false,
 				}),
 			}
-			if mdb[m.Author.ID].Count >= 3 {
+			if mdb[m.Author.ID].Count == util.GetConfig().LimitCount {
 				removeAllRolesFromUser(s, m)
-				removeMessageHistory(s, m)
+			}
+			if mdb[m.Author.ID].Count > util.GetConfig().LimitCount {
+				removeMessage(s, m.ChannelID, m.ID)
 			}
 			return
 		}
@@ -99,6 +110,7 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 			{
 				ChannelID: m.ChannelID,
 				MessageID: m.ID,
+				Delete:    false,
 			},
 		},
 	}
@@ -106,7 +118,6 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 }
 
 func timeLapse(t time.Time) bool {
-	fmt.Println(time.Since(t))
 	return time.Since(t) < (time.Duration(util.GetConfig().SummonTimeout) * time.Second)
 }
 
@@ -127,19 +138,24 @@ func removeAllRolesFromUser(s *discordgo.Session, m *discordgo.MessageCreate) {
 		}
 	}
 	fmt.Printf("All roles removed for user %s(%s) in server %s\n", userID, m.Author.Username, serverID)
+	removeMessageHistory(s, m)
 }
 
 func removeMessageHistory(s *discordgo.Session, m *discordgo.MessageCreate) {
 	for _, v := range mdb[m.Author.ID].MessageHistory {
-		fmt.Println(v.MessageID)
-		err := s.ChannelMessageDelete(v.ChannelID, v.MessageID)
-		if err != nil {
-			if err.(*discordgo.RESTError).Message.Code == 10008 {
-				continue
-			}
-			fmt.Printf("Error deleting message %s in channel %s: %s\n", v.MessageID, v.ChannelID, err)
+		if v.Delete {
+			continue
 		}
+		v.Delete = true
+		removeMessage(s, v.ChannelID, v.MessageID)
 	}
 	delete(mdb, m.Author.ID)
 	fmt.Printf("All messages deleted for user %s(%s)\n", m.Author.ID, m.Author.Username)
+}
+
+func removeMessage(s *discordgo.Session, channelID string, messageID string) {
+	err := s.ChannelMessageDelete(channelID, messageID)
+	if err != nil {
+		fmt.Printf("Error deleting message %s in channel %s: %s\n", messageID, channelID, err)
+	}
 }
