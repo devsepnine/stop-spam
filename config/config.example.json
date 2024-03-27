@@ -1,6 +1,6 @@
 {
   "discord_token": "discord_token",
-  "guild": "guild_id",
   "summon_timeout": 10,
-  "white_list": null
+  "white_list": [],
+  "limit_count": 3
 }
